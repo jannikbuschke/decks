@@ -1,0 +1,290 @@
+import { CodeSurfer, CodeSurferColumns, Step, Header } from 'code-surfer';
+import { github, vsDark, nightOwl } from '@code-surfer/themes';
+import i0 from './2022-06-02 18_58_12-tldraw.png';
+import i1 from './2022-06-02 19_01_05-tldraw.png';
+import marten1 from './marte-eventspng.png';
+import marten2 from './projection1.png';
+import marten3 from './projection2.png';
+import 'prismjs/components/prism-csharp';
+
+export const theme = nightOwl;
+
+# Dev tips und Event Sourcing mit martendb
+
+---
+
+# Agenda / diverse Themen
+
+Software Entwicklung 101
+
+Webapp Architektur
+
+Event Sourcing mit Marten
+
+---
+
+Jannik Buschke
+
+[github](https://github.com/jannikbuschke)
+[twitter](https://twitter.com/jannikbuschke)
+
+---
+
+# Part 1: Software Entwicklung 101
+
+---
+
+# DEV is hard
+
+---
+
+# Tips
+
+- code regularly
+- write tests
+- read code
+- read the docs
+- consume
+  - books, YT, video courses, blogs, ...
+- experiment
+- keep it simple
+- try to teach
+
+---
+
+# some book recommendations
+
+---
+
+# Books #1
+
+The Pragmatic Programmer: From Journeyman to Master
+_by Andy Hunt_ <br/>
+Refactoring: Improving the Design of Existing Code
+_by Martin Fowler_ <br/>
+The Self-Taught Programmer: The Definitive Guide to Programming Professionally
+_by Cory Althoff_ <br/>
+CQRS Documents
+_by Greg Young_ <br/>
+Domain Modeling Made Functional: Tackle Software Complexity with Domain-Driven Design
+_by Scott Wlaschin_ <br/>
+are Engineering
+_by Frederick P. Brooks Jr._ <br/>
+
+---
+
+# Books #2
+
+Clean Code: A Handbook of Agile Software Craftsmanship
+_by Robert C. Martin_ <br/>
+The Mythical Man-Month: Essays on Softw
+Domain-Driven Design: Tackling Complexity in the Heart of Software
+_by Eric J. Evans_ <br/>
+Don't Make Me Think, Revisited: A Common Sense Approach to Web Usability
+_by Steve Krug_<br/>
+Continuous Delivery: Reliable Software Releases Through Build, Test, and Deployment Automation
+_by Jez Humble_<br/>
+
+---
+
+# Why Tests
+
+- Programming is hard
+- Feedback
+- Improves design
+- Improves reusability
+- Documentation
+- Allows refactoring
+
+---
+
+# Part 2: Webapp Architektur
+
+---
+
+<img src={i0} />
+
+---
+
+<img src={i1} />
+
+---
+
+# Part 3: Event Sourcing
+
+---
+
+<img
+  style={{ background: 'white' }}
+  src="https://pedroassumpcao.ghost.io/content/images/2020/10/Event-Sourcing.png"
+/>
+
+---
+
+<CodeSurferColumns themes={[ vsDark]}>
+
+<Step>
+
+```csharp title="Commands" subtitle="Requests with side effects (i.e. db updates)"
+
+[Action(Route = "api/ti/move-player")]
+public record MovePlayer([NotEmpty] Guid Id, Direction Direction) : IRequest<Unit>;
+
+[Action(Route = "api/ti/restart-game")]
+public record RestartGame() : IRequest<Unit>;
+
+[Action(Route = "api/ti/create-player")]
+public record CreatePlayer(string Name, string Icon) : IRequest<CreatePlayerResult>;
+
+[Action(Route = "api/ti/join")]
+public record Join(Guid PlayerId, Guid GameId) : IRequest<Unit>;
+
+```
+
+```csharp title="Command handler" subtitle="Each Command is handled by a handler"
+  public class PlayerCommandsHandler: IRequestHandler<MovePlayer, Unit>
+
+    private IDocumentSession session;
+    public PlayerCommandsHandler(IDocumentSession session) {
+      this.session = session;
+    }
+
+    public async Task<Unit> Handle(MovePlayer request, CancellationToken cancellationToken) {
+        var player = await session.LoadAsync<Player>(request.Id);
+        var newPosition = request.Direction.AddTo(player.Position);
+        // append event PlayerMoved to event store
+        session.Events.Append(request.Id, new PlayerMoved(request.Id, newPosition));
+        await session.SaveChangesAsync();
+        return Unit.Value;
+    }
+  }
+```
+
+  </Step>
+
+  </CodeSurferColumns>
+
+---
+
+### Marten events table
+
+<img src={marten1} />
+
+---
+
+# Marten event handler
+
+After the events are stored to the event store, Marten will update our readmodel
+
+---
+
+<CodeSurferColumns themes={[ vsDark]}>
+
+<Step>
+
+```csharp title="Events" subtitle="Represent facts that happend"
+
+public record PlayerJoined(Guid PlayerId)
+
+public record PlayerInitialized(Position Position)
+
+public record PlayerCreated(Guid Id, string Name, string Icon, Position Position)
+
+public record PlayerMoved(Guid Id, Position Position)
+
+public record PlayerPickedItem(Position Position, Item Item, Guid PlayerId);
+
+public record ItemDropped(Position Position, Item Item);
+
+
+```
+
+```csharp title="Readmodel" subtitle="'Apply' methods are called by marten with the corresponding events (using naming convention/reflection)"
+
+public class Player
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; }
+    public string Icon { get; set; }
+    public Position Position { get; set; }
+    public List<Item> Items { get; set; } = new();
+
+    public void Apply(PlayerCreated e) {
+        Id = e.Id;
+        Name = e.Name;
+        Icon = e.Icon;
+        Position = e.Position;
+    }
+
+    public void Apply(PlayerInitialized e) {
+        Position = e.Position;
+        Items = new();
+    }
+
+    public void Apply(PlayerMoved e) {
+        Position = e.Position;
+    }
+
+    public void Apply(ItemPicked e) {
+        Items.Add(e.Item);
+    }
+}
+
+
+```
+
+</Step>
+
+</CodeSurferColumns>
+
+---
+
+# Readmodel materialization
+
+- the readmodel is persisted automatically by marten into a document store
+
+---
+
+### Marten materialized readmodel #1
+
+<img src={marten2} />
+
+---
+
+### Marten materialized readmodel #2
+
+<img src={marten3} />
+
+---
+
+<CodeSurfer>
+
+```csharp title="Query and handler" subtitle="Requests without side effects (i.e. read from db)"
+
+// Request that represents a query
+[Action(Route = "api/ti/get-players"]
+public record GetPlayers() : IRequest<IEnumerable<Player>>;
+
+// handler reads data from the document store
+public class Handler : IRequestHandler<GetPlayers, IEnumerable<Player>> {
+    private readonly IDocumentSession session;
+    private readonly IClientNotificationService notificationService;
+
+    public Handler(IDocumentSession session)
+    {
+        this.session = session;
+        this.notificationService = notificationService;
+    }
+
+    public async Task<IEnumerable<Player>> Handle(GetPlayers request, CancellationToken cancellationToken)
+    {
+        var players = await session.Query<Player>().ToListAsync();
+        return players;
+    }
+```
+
+</CodeSurfer>
+
+---
+
+Vielen Dank
